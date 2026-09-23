@@ -18,7 +18,7 @@ class Video:
         if response.status_code in (401, 403):
             raise AuthenticationRequired('Video token expired')
         if response.status_code != 200:
-            raise RemoteError(f'Video HTTP {response.status_code}')
+            raise RemoteError(f'Video HTTP {response.status_code}', stage='video_api', code=response.status_code)
         try:
             body = response.json()
         except ValueError:
@@ -60,11 +60,14 @@ class Video:
             page += 1
         return result
 
-    def sources(self, lecture_id, kind='vod'):
+    def sources(self, lecture_id, kind='vod', *, live_protocol=3):
         if kind == 'vod':
             info = self.get('/v1/course_vod_urls_new', courseId=lecture_id)
             return [MediaSource(v['url'], view=str(v.get('viewNum', 'unknown'))) for v in (info or {}).get('courseVodViewList', []) if v.get('url')]
-        info = self.get('/v1/course_vod_videoinfos', courseId=lecture_id, playType='hls')
+        # Official player's protocol enum: WEBRTC=1, FLV=2, HLS=3.
+        if live_protocol not in (2, 3):
+            raise ValueError('Unsupported live protocol')
+        info = self.get('/v1/course_vod_videoinfos', courseId=lecture_id, playType=live_protocol)
         sources = []
         for item in (info or {}).get('courseDeviceViewDtoList') or []:
             url = item.get('chanNameMainPlayUrl')

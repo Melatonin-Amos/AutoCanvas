@@ -6,7 +6,7 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
-KINDS = {'vod_asr', 'vod_slides', 'live', 'sync', 'assignments'}
+KINDS = {'vod_asr', 'vod_slides', 'live', 'sync', 'assignments', 'local_asr', 'local_slides', 'sample_asr', 'sample_slides'}
 
 
 class Store:
@@ -69,8 +69,9 @@ class Store:
     def claim(self, kind, *, run_id=None, allow_automatic=True):
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
-            sql = "SELECT * FROM executions WHERE kind=? AND status='pending' AND due<=?"
-            params = [kind, time.time()]
+            kinds = (kind,) if isinstance(kind, str) else tuple(kind)
+            sql = "SELECT * FROM executions WHERE kind IN (" + ','.join('?' for _ in kinds) + ") AND status='pending' AND due<=?"
+            params = [*kinds, time.time()]
             if run_id:
                 sql += ' AND id=?'
                 params.append(run_id)
@@ -110,6 +111,12 @@ class Store:
     def executions(self):
         with self.connect() as db:
             return [{**dict(r), 'options': json.loads(r['options'])} for r in db.execute('SELECT * FROM executions ORDER BY created DESC')]
+
+    def recover_auth(self, run_id, *, expired=False):
+        """Compare-and-set: never resurrect concurrent cancellation or completed work."""
+        with self.connect() as db:
+            return bool(db.execute("UPDATE executions SET status=?, attempts=0, due=0, error=NULL, updated=? WHERE id=? AND status='needs_login'",
+                ('expired' if expired else 'pending', time.time(), run_id)).rowcount)
 
     def execution(self, run_id):
         with self.connect() as db:

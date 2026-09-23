@@ -1,0 +1,176 @@
+import asyncio
+import hashlib
+import hmac
+import secrets
+import time
+from collections import defaultdict, deque
+from pathlib import Path
+from urllib.parse import urlsplit
+from aiohttp import web, ClientSession, ClientTimeout
+
+COOKIE = 'autocanvas_dashboard'
+LOGIN = '''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AutoCanvas · 登录</title><style>
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f4f6f1;color:#193e32;font-family:system-ui,sans-serif}.card{width:min(420px,90vw);padding:40px;background:white;border:1px solid #dde5dc;border-radius:20px;box-shadow:0 18px 60px #183e3210}h1{font-size:28px;margin:0 0 10px}p{color:#6b7f74;line-height:1.6}label{display:block;margin:28px 0 10px}input,button{width:100%;padding:14px;border-radius:10px;font:inherit}input{border:1px solid #cbd8cd}button{margin-top:18px;border:0;background:#193e32;color:white;cursor:pointer}button:disabled{opacity:.5}#error{color:#ac3d31;min-height:24px;font-size:14px}.brand{font-size:12px;letter-spacing:3px;margin-bottom:24px;color:#6b7f74}</style><main class="card"><div class="brand">PERSONAL LEARNING SPACE</div><h1>AutoCanvas</h1><p>输入访问密码，进入个人工作空间。</p><form id="form"><label for="password">访问密码</label><input id="password" name="password" type="password" autocomplete="current-password" required autofocus maxlength="1024"><button id="submit">进入工作空间</button><p id="error" role="alert"></p></form></main><script>
+const form=document.getElementById('form'),button=document.getElementById('submit'),error=document.getElementById('error');form.addEventListener('submit',async e=>{e.preventDefault();button.disabled=true;error.textContent='';try{const r=await fetch('/_dashboard/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:document.getElementById('password').value})});if(r.ok){location.replace('/');return}error.textContent=r.status===429?'尝试过于频繁，请稍后再试。':'密码不正确，请重试。'}catch{error.textContent='暂时无法连接，请稍后再试。'}finally{button.disabled=false}});
+</script></html>'''
+
+
+def create_app(config):
+    password = config.get('password')
+    if not isinstance(password, str) or not 12 <= len(password) <= 1024 or password.startswith('CHANGE-ME'):
+        raise ValueError('dashboard.yml 中 password 至少需要 12 个字符')
+    root = Path(config['dist']).resolve()
+    if not (root/'index.html').is_file():raise ValueError('请先构建 WebUI')
+    ttl = int(config.get('session_hours', 12))*3600
+    if not 3600 <= ttl <= 7*86400:raise ValueError('session_hours 必须为 1 到 168')
+    salt = secrets.token_bytes(16)
+    def digest(value):return hashlib.scrypt(value.encode(), salt=salt, n=16384, r=8, p=1)
+    expected = digest(password)
+    sessions = {}
+    attempts = defaultdict(deque)
+    global_attempts = deque()
+    login_lock = asyncio.Lock()
+    upstreams = {'homework': config.get('homework_api', 'http://127.0.0.1:8090'),
+                 'canvas': config.get('autocanvas_api', 'http://127.0.0.1:8080')}
+    for target in upstreams.values():
+        u = urlsplit(target)
+        if u.scheme != 'http' or u.hostname not in ('127.0.0.1', 'localhost', '::1') or u.path not in ('', '/'):
+            raise ValueError('内部 API 必须为本机 HTTP 地址')
+
+    def identity(request):return request.cookies.get(COOKIE, '')
+    def authenticated(request):return sessions.get(identity(request), 0) > time.monotonic()
+    def same_origin(request):
+        origin = request.headers.get('Origin')
+        return (not origin or urlsplit(origin).netloc == request.host) and request.headers.get('Sec-Fetch-Site') != 'cross-site'
+
+    @web.middleware
+    async def guard(request, handler):
+        if request.method not in ('GET', 'HEAD', 'OPTIONS') and not same_origin(request):
+            return web.json_response({'error':'跨站请求被拒绝'}, status=403)
+        if request.path in ('/_dashboard/login', '/_dashboard/logout'):
+            return await handler(request)
+        if not authenticated(request):
+            if request.path in ('/', '/login') or ('text/html' in request.headers.get('Accept','') and not request.path.startswith(('/api/', '/assets/', '/health'))):
+                return web.Response(text=LOGIN, content_type='text/html', headers={'Cache-Control':'no-store'})
+            return web.json_response({'error':'请先输入访问密码'}, status=401,
+                                     headers={'X-Dashboard-Auth':'required','Cache-Control':'no-store'})
+        return await handler(request)
+
+    @web.middleware
+    async def security_headers(request, handler):
+        response = await handler(request)
+        if not response.prepared:
+            response.headers['X-Frame-Options'] = 'DENY'
+            response.headers['X-Content-Type-Options'] = 'nosniff'
+            response.headers['Referrer-Policy'] = 'same-origin'
+            response.headers['Cache-Control'] = 'no-store'
+        return response
+
+    app = web.Application(middlewares=[security_headers, guard], client_max_size=2*1024**3)
+    client = None
+    streams = {}
+    stopping = False
+
+    async def login(request):
+        if request.method == 'GET':
+            return web.Response(text=LOGIN, content_type='text/html', headers={'Cache-Control':'no-store'})
+        # Bound work and memory; do not trust spoofable forwarded IP headers.
+        now = time.monotonic()
+        for key in list(attempts):
+            while attempts[key] and now-attempts[key][0] > 300:attempts[key].popleft()
+            if not attempts[key]:del attempts[key]
+        while global_attempts and now-global_attempts[0] > 60:global_attempts.popleft()
+        key = request.remote or 'unknown'
+        if len(attempts[key]) >= 10 or len(global_attempts) >= 60 or len(attempts) > 1000:
+            return web.json_response({'error':'请稍后重试'}, status=429, headers={'Retry-After':'60'})
+        attempts[key].append(now);global_attempts.append(now)
+        if request.content_length is None or request.content_length > 4096:
+            raise web.HTTPRequestEntityTooLarge(max_size=4096, actual_size=request.content_length or 4097)
+        try:data = await request.json()
+        except Exception:return web.json_response({'error':'无效请求'},status=400)
+        value = data.get('password') if isinstance(data, dict) else None
+        if not isinstance(value,str) or len(value)>1024:return web.json_response({'error':'无效请求'},status=400)
+        async with login_lock:
+            valid = hmac.compare_digest(await asyncio.to_thread(digest,value), expected)
+        if not valid:return web.json_response({'error':'密码不正确'},status=401)
+        for token, expiry in list(sessions.items()):
+            if expiry <= now:sessions.pop(token,None)
+        if len(sessions) >= 256:sessions.pop(next(iter(sessions)))
+        sessions.pop(identity(request),None)
+        token = secrets.token_urlsafe(32);sessions[token] = time.monotonic()+ttl
+        response = web.json_response({'authenticated':True}, headers={'Cache-Control':'no-store'})
+        secure = request.secure or request.headers.get('X-Forwarded-Proto','').lower() == 'https'
+        response.set_cookie(COOKIE,token,httponly=True,secure=secure,samesite='Strict',max_age=ttl,path='/')
+        return response
+
+    async def logout(request):
+        token = identity(request);sessions.pop(token,None)
+        for task, sid in list(streams.items()):
+            if sid == token:task.cancel()
+        response = web.HTTPSeeOther('/')
+        response.del_cookie(COOKIE,path='/')
+        response.headers['Cache-Control']='no-store'
+        return response
+
+    async def proxy(request):
+        target = upstreams['homework' if request.path.startswith('/api/homework/') else 'canvas']
+        hop = {'host','cookie','connection','keep-alive','proxy-authenticate','proxy-authorization',
+               'te','trailer','transfer-encoding','upgrade','content-length','forwarded','x-forwarded-for','x-forwarded-proto'}
+        headers = {k:v for k,v in request.headers.items() if k.lower() not in hop}
+        headers['Host'] = request.host
+        headers['Accept-Encoding'] = 'identity'
+        task = asyncio.current_task();streams[task] = identity(request)
+        try:
+            async with client.request(request.method, target.rstrip('/')+request.raw_path, headers=headers,
+                                      data=request.content.iter_chunked(65536) if request.can_read_body else None,
+                                      allow_redirects=False) as upstream:
+                output = {k:v for k,v in upstream.headers.items() if k.lower() not in hop|{'set-cookie'}}
+                output['Cache-Control']='no-store'
+                response = web.StreamResponse(status=upstream.status,headers=output)
+                await response.prepare(request)
+                async for chunk in upstream.content.iter_chunked(65536):
+                    if not authenticated(request):break
+                    await response.write(chunk)
+                return response
+        except (ConnectionError, OSError, asyncio.TimeoutError):
+            return web.json_response({'error':'目标服务暂不可用'},status=502)
+        finally:streams.pop(task,None)
+
+    async def static(request):
+        if request.method not in ('GET','HEAD'):raise web.HTTPMethodNotAllowed(request.method,['GET','HEAD'])
+        name = request.path.lstrip('/')
+        path = (root/name).resolve()
+        if not path.is_relative_to(root):raise web.HTTPNotFound()
+        if not path.is_file():
+            if name.startswith('assets/') or Path(name).suffix:raise web.HTTPNotFound()
+            path = root/'index.html'
+        return web.FileResponse(path,headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'})
+
+    async def lifetime(app):
+        nonlocal client, stopping
+        client = ClientSession(timeout=ClientTimeout(total=None,sock_connect=5),auto_decompress=False)
+        async def reap():
+            while not stopping:
+                await asyncio.sleep(1)
+                for task,token in list(streams.items()):
+                    if sessions.get(token,0) <= time.monotonic():task.cancel()
+        reaper = asyncio.create_task(reap())
+        yield
+        stopping=True;reaper.cancel()
+        for task in list(streams):task.cancel()
+        await asyncio.gather(reaper, *list(streams), return_exceptions=True)
+        await client.close()
+    app.cleanup_ctx.append(lifetime)
+    app.router.add_get('/_dashboard/login',login)
+    app.router.add_post('/_dashboard/login',login)
+    app.router.add_post('/_dashboard/logout',logout)
+    if config.get('codex_config'):
+        from homework_service.web import register
+        register(app, config['codex_config'])
+        async def retired_homework(request):
+            return web.json_response({'error':'旧作业管理入口已移除，请使用 Codex 会话'}, status=410)
+        app.router.add_route('*','/api/homework/{rest:.*}',retired_homework)
+    app.router.add_route('*','/api/{rest:.*}',proxy)
+    app.router.add_route('*','/health',proxy)
+    app.router.add_route('*','/{rest:.*}',static)
+    return app

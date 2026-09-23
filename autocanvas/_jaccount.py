@@ -39,6 +39,14 @@ DEFAULT_SESSION_PATH = Path("canvas_session.json")
 MAX_CAPTCHA_RETRIES = 5
 
 
+class SessionExpired(RuntimeError):
+    pass
+
+
+class LoginProtocolError(RuntimeError):
+    pass
+
+
 def _load_config():
     return os.environ.get("AUTOCANVAS_USERNAME", "")
 
@@ -110,11 +118,12 @@ def load_session(path: Path = DEFAULT_SESSION_PATH) -> Optional[requests.Session
                 path=item.get("path", "/"),
             )
     except Exception:
+        session.close()
         return None
     return session
 
 
-def is_session_valid(session: requests.Session) -> bool:
+def is_session_valid(session: requests.Session, *, strict=False) -> bool:
     """
     快速校验 Canvas Session 是否仍有效。
     访问 dashboard_cards API，返回 200 则认为有效。
@@ -126,8 +135,20 @@ def is_session_valid(session: requests.Session) -> bool:
             stream=True,
         ) as resp:
             _ = resp.content
-            return resp.status_code == 200 and isinstance(resp.json(), list)
+            target = urlparse(resp.url)
+            if resp.status_code in (401, 403) or target.hostname == 'jaccount.sjtu.edu.cn' or target.path.startswith('/login'):
+                return False
+            resp.raise_for_status()
+            try:
+                valid = resp.status_code == 200 and isinstance(resp.json(), list)
+            except ValueError:
+                raise LoginProtocolError('Canvas session check returned invalid JSON') from None
+            if not valid:
+                raise LoginProtocolError('Canvas session check returned an unexpected response')
+            return True
     except Exception:
+        if strict:
+            raise
         return False
 
 
@@ -153,6 +174,7 @@ def _get_jaccount_login_page(
     """访问 Canvas → 跟重定向到 jAccount 登录页，返回 (login_url, html)。"""
     session.get(CANVAS_LOGIN_URL, allow_redirects=True, timeout=30)
     resp = session.get(CANVAS_OPENID_URL, allow_redirects=True, timeout=30)
+    resp.raise_for_status()
     logger.debug("[auth] jAccount login page status=%d", resp.status_code)
     return resp.url, resp.text
 
@@ -287,6 +309,7 @@ def _submit_login(
         },
     )
 
+    resp.raise_for_status()
     result = None
     try:
         result = resp.json()
@@ -298,6 +321,9 @@ def _submit_login(
         redirect_url = result["url"]
         if redirect_url.startswith("/"):
             redirect_url = "https://jaccount.sjtu.edu.cn" + redirect_url
+        callback = urlparse(redirect_url)
+        if callback.scheme != 'https' or callback.hostname not in ('jaccount.sjtu.edu.cn', 'oc.sjtu.edu.cn'):
+            raise LoginProtocolError('Unexpected login callback host')
         logger.info("[auth] 登录成功，跟随回调...")
         resp = session.get(redirect_url, allow_redirects=True, timeout=30)
 
@@ -370,7 +396,7 @@ def _jaccount_login(session: requests.Session) -> requests.Session:
     raise RuntimeError(f"验证码重试 {MAX_CAPTCHA_RETRIES} 次均失败")
 
 
-def _refresh_with_jacookie(session: requests.Session) -> Optional[requests.Session]:
+def _refresh_with_jacookie(session: requests.Session, *, strict=False) -> Optional[requests.Session]:
     """
     用已有 JAAuthCookie 静默刷新 Canvas session。
     成功返回新 session（含 Canvas cookies + JAAuthCookie），失败返回 None。
@@ -397,15 +423,20 @@ def _refresh_with_jacookie(session: requests.Session) -> Optional[requests.Sessi
     try:
         fresh.get(CANVAS_LOGIN_URL, allow_redirects=True, timeout=30)
         resp = fresh.get(CANVAS_OPENID_URL, allow_redirects=True, timeout=30)
+        resp.raise_for_status()
 
-        if "oc.sjtu.edu.cn" in resp.url and is_session_valid(fresh):
+        if urlparse(resp.url).hostname == 'oc.sjtu.edu.cn' and is_session_valid(fresh, strict=strict):
             logger.info("[auth] JAAuthCookie 刷新成功")
             return fresh
 
         logger.info("[auth] JAAuthCookie refresh failed")
     except Exception as exc:
+        fresh.close()
+        if strict:
+            raise
         logger.warning("[auth] JAAuthCookie refresh failed: %s", type(exc).__name__)
 
+    fresh.close()
     return None
 
 
@@ -428,20 +459,27 @@ def ensure_session(
     """
     # Tier 1: 加载缓存
     session = load_session(session_path)
-    if session and is_session_valid(session):
-        logger.debug("[auth] 缓存 session 有效")
-        return session
-
-    # Tier 2: JAAuthCookie 静默刷新
     if session:
-        refreshed = _refresh_with_jacookie(session)
-        if refreshed:
-            save_session(refreshed, session_path)
-            return refreshed
+        try:
+            if is_session_valid(session, strict=True):
+                return session
+            refreshed = _refresh_with_jacookie(session, strict=True)
+            if refreshed:
+                try:
+                    save_session(refreshed, session_path)
+                except BaseException:
+                    refreshed.close()
+                    raise
+                session.close()
+                return refreshed
+        except BaseException:
+            session.close()
+            raise
+        session.close()
 
     # Tier 3: 完整 jAccount 登录
     if not auto_prompt:
-        raise RuntimeError("Canvas Session 失效，JAAuthCookie 刷新也失败，需要手动登录")
+        raise SessionExpired('Canvas session and jAccount cookie unavailable')
 
     logger.info("[auth] 启动 jAccount 登录...")
     session = create_session()

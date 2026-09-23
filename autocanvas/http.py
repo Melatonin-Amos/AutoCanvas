@@ -1,14 +1,20 @@
 """Thin HTTP adapter over explicit use cases. Never runs model code in handlers."""
 from aiohttp import web
+from urllib.parse import urlsplit
 
 
 def create_app(service):
     @web.middleware
     async def errors(request, handler):
         try:
+            origin = request.headers.get('Origin')
+            if origin and urlsplit(origin).netloc != request.host:
+                raise web.HTTPForbidden(text='Cross-origin requests are not allowed')
             return await handler(request)
-        except (KeyError, ValueError, TypeError):
-            return web.json_response({'error': 'Invalid request or unknown resource'}, status=400)
+        except ValueError as error:
+            return web.json_response({'error': str(error)}, status=400)
+        except (KeyError, TypeError):
+            return web.json_response({'error': '请求参数不正确或资源不存在'}, status=400)
         except web.HTTPException:
             raise
         except Exception as error:
@@ -21,7 +27,7 @@ def create_app(service):
         blocked = sum(r['status'] == 'needs_login' for r in store.executions())
         failed = [t.get_name() for t in service.background if t.done() and not t.cancelled() and t.exception()]
         return web.json_response({'status': 'degraded' if failed else 'needs_login' if blocked else 'ok', 'failed_workers': failed, 'version': 2,
-                                  'active': len(service.active), 'automation': store.get('control','automation', {'paused': False})})
+                                  'scheduler_running': any(t.get_name() == 'automation' and not t.done() for t in service.background), 'active': len(service.active), 'automation': store.get('control','automation', {'paused': False})})
 
     async def listing(request):
         collection = request.match_info['collection']
@@ -75,7 +81,7 @@ def create_app(service):
         body = await request.json()
         if set(body) != {'paused'} or type(body['paused']) is not bool:
             raise ValueError()
-        store.put('control','automation', body)
+        service.set_automation(body['paused'])
         return web.json_response(body)
 
     async def rules(request):
@@ -85,9 +91,9 @@ def create_app(service):
         if request.method == 'GET':
             return web.json_response(store.get('rules', course_id, {}))
         body = await request.json()
-        if set(body)-{'asr','slides','live'} or any(type(v) is not bool for v in body.values()):
+        if set(body)-{'asr','slides','live'} or any(v is not None and type(v) is not bool for v in body.values()):
             raise ValueError()
-        merged = {**store.get('rules', course_id, {}), **body}
+        merged = {k: v for k, v in {**store.get('rules', course_id, {}), **body}.items() if v is not None}
         store.put('rules', course_id, merged)
         return web.json_response(merged)
 
@@ -101,5 +107,7 @@ def create_app(service):
     app.router.add_post('/api/automation', automation)
     app.router.add_get('/api/courses/{id}/rules', rules)
     app.router.add_patch('/api/courses/{id}/rules', rules)
+    from .web_api import install
+    install(app, service)
     app.router.add_get('/api/{collection}', listing)
     return app

@@ -110,10 +110,18 @@ async def main_async(args, settings):
                     await service.start(automation=not args.no_automation)
                     stopped = asyncio.Event()
                     loop = asyncio.get_running_loop()
+                    old_handlers = {}
                     for sig in (signal.SIGINT, signal.SIGTERM):
-                        loop.add_signal_handler(sig, stopped.set)
+                        try:
+                            loop.add_signal_handler(sig, stopped.set)
+                        except NotImplementedError:  # Windows event loops
+                            old_handlers[sig] = signal.signal(sig, lambda *_: loop.call_soon_threadsafe(stopped.set))
                     print(f'AutoCanvas V2 listening on http://{settings.host}:{settings.port}', flush=True)
-                    await stopped.wait()
+                    try:
+                        await stopped.wait()
+                    finally:
+                        for sig, handler in old_handlers.items():
+                            signal.signal(sig, handler)
                 finally:
                     await runner.cleanup()
             elif args.command == 'sync':
@@ -186,9 +194,7 @@ async def main_async(args, settings):
 
 def main():
     args = parser().parse_args()
-    settings = Settings.load(args.config)
-    if args.root:
-        settings.root = args.root.resolve()
+    settings = Settings.load(args.config, root=args.root)
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s %(message)s')
     try:
         asyncio.run(main_async(args, settings))

@@ -89,10 +89,15 @@ async def sample_frames(source, destination: Path, *, every=5, duration=None):
     args = ['ffmpeg', '-nostdin', '-y', '-hide_banner', '-loglevel', 'error', *inputs(source), '-i', source.location]
     if duration is not None:
         args += ['-t', str(duration)]
-    args += ['-an', '-vf', f'fps=1/{every}:start_time=0', '-q:v', '2', str(destination/'%08d.jpg')]
+    args += ['-an', '-vf', f'fps=1/{every}:start_time=0', '-pix_fmt', 'yuvj420p', '-q:v', '2', str(destination/'%08d.jpg')]
     await command(args, timeout=7200)
     if not next(destination.glob('*.jpg'), None):
-        raise MediaError('No video frames decoded')
+        # Clips shorter than the sampling interval still have a useful first frame.
+        await command(['ffmpeg', '-nostdin', '-y', '-hide_banner', '-loglevel', 'error',
+                       *inputs(source), '-i', source.location, '-frames:v', '1', '-pix_fmt', 'yuvj420p', '-q:v', '2',
+                       str(destination/'00000001.jpg')], timeout=60)
+        if not next(destination.glob('*.jpg'), None):
+            raise MediaError('No video frames decoded')
 
 
 async def select(sources, purpose, view=None):
@@ -123,3 +128,38 @@ async def select(sources, purpose, view=None):
     if not candidates:
         raise MediaError('No readable media source')
     return max(candidates, key=lambda x: x[0])[1]
+
+
+async def live_frames(source):
+    """Continuous JPEG stream at 2 Hz. Consumer must drain into a latest-only slot."""
+    args = ['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', *inputs(source)]
+    if '.m3u8' in source.location.split('?')[0]:
+        args += ['-live_start_index', '-1']
+    args += ['-fflags', 'nobuffer', '-analyzeduration', '500000', '-probesize', '1000000', '-i', source.location, '-an', '-vf', 'fps=2',
+             '-q:v', '3', '-c:v', 'mjpeg', '-f', 'image2pipe', 'pipe:1']
+    proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+    buffer = bytearray()
+    try:
+        while data := await asyncio.wait_for(proc.stdout.read(65536), 20):
+            buffer.extend(data)
+            while True:
+                start = buffer.find(b'\xff\xd8')
+                end = buffer.find(b'\xff\xd9', max(0, start)+2)
+                if start < 0 or end < 0:
+                    break
+                yield bytes(buffer[start:end+2])
+                del buffer[:end+2]
+            if len(buffer) > 16*1024*1024:
+                raise MediaError('Live image exceeds frame limit')
+        raise MediaError('Live video disconnected')
+    finally:
+        # ffmpeg can be blocked on a full pipe when a latest-frame reader is stopped.
+        # Drain concurrently so Process.wait is not held open by unread stdout.
+        async def drain():
+            while await proc.stdout.read(65536):
+                pass
+        draining = asyncio.create_task(drain())
+        try:
+            await stop(proc)
+        finally:
+            await asyncio.gather(draining, return_exceptions=True)

@@ -44,11 +44,13 @@ class CatalogSync:
         finally:
             client.close()
 
-    def sources(self, lecture):
+    def sources(self, lecture, *, live_protocol=3):
         # Each operation gets fresh course-scoped credentials. Nothing is cached in the DB.
         for attempt in range(2):
             client = self.video_factory(lecture['course_id'])
             try:
+                if lecture['kind'] == 'live' and live_protocol != 3:
+                    return client.sources(lecture['id'], lecture['kind'], live_protocol=live_protocol)
                 return client.sources(lecture['id'], lecture['kind'])
             except AuthenticationRequired:
                 if attempt:
@@ -107,6 +109,13 @@ async def slides_source(source, folder, cache, *, sample_every=5, duration=None)
             row.pop('frame', None)
             serial.append(row)
         atomic_json(pending/'slides.json', serial)
+        # Optional analysis is isolated: a QR failure must not discard extracted slides.
+        from .qr import scan_images
+        try:
+            qr_report = await blocking(scan_images, pending, serial)
+        except Exception as error:
+            qr_report = {'version': 1, 'status': 'failed', 'events': [], 'error': type(error).__name__}
+        atomic_json(pending/'qr.json', qr_report)
         target = folder/'result'
         backup = folder/'previous'
         if backup.exists():

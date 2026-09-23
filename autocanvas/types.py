@@ -45,7 +45,10 @@ class AuthenticationRequired(RuntimeError):
 
 
 class RemoteError(RuntimeError):
-    pass
+    def __init__(self, message='', *, stage=None, code=None):
+        super().__init__(message)
+        self.stage = stage
+        self.code = code
 
 
 class MediaError(RuntimeError):

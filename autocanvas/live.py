@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from . import media
 from .outputs import Transcript, append_event
-from .types import AuthenticationRequired, MediaError
+from .types import AuthenticationRequired, MediaError, RemoteError
 
 
 class KeywordDetector:
@@ -69,9 +69,11 @@ class LiveMonitor:
                         finally:
                             await reader.aclose()
                 except AuthenticationRequired:
+                    append_event(events, {'type': 'authentication_required', 'at': time.time()})
                     raise
                 except Exception as error:
-                    append_event(events, {'type': 'connection_interrupted', 'at': time.time(), 'error': type(error).__name__})
+                    detail = {'stage': error.stage, 'code': error.code} if isinstance(error, RemoteError) else {}
+                    append_event(events, {'type': 'connection_interrupted', 'at': time.time(), 'error': type(error).__name__, **detail})
                 remaining = end-time.time()
                 if remaining > 0:
                     await asyncio.sleep(min(self.reconnect_seconds, remaining))

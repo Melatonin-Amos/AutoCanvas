@@ -5,6 +5,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 from aiohttp.test_utils import TestServer, TestClient
 from autocanvas.config import Settings
 from autocanvas.storage import Store
@@ -55,6 +56,72 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         await self.service.start(automation=False)
         await self.wait_status(bad,'needs_login')
         await self.wait_status(good,'succeeded')
+
+    async def test_video_transport_failure_retries_without_login_block(self):
+        from autocanvas.types import RemoteError
+        async def replay(*args):
+            raise RemoteError('Video launch transport failed', stage='video_launch', code='Timeout')
+        self.service.replay = SimpleNamespace(run=replay)
+        run = self.service.enqueue_processing('1', '2', 'vod_asr')
+        await self.service._execute(self.store.claim('vod_asr'))
+        row = self.store.execution(run)
+        self.assertEqual(row['status'], 'pending')
+        self.assertEqual(row['error'], 'RemoteError')
+        self.assertGreater(row['due'], time.time())
+
+    async def test_auth_recovery_preserves_pause_cancel_and_course_scope(self):
+        blocked = self.store.enqueue('vod_asr', '1', '2', options={'automatic': True})
+        self.store.finish(blocked, 'needs_login')
+        cancelled = self.store.enqueue('vod_slides', '1', '2')
+        self.store.finish(cancelled, 'needs_login')
+        self.store.cancel(cancelled)
+        other = self.store.enqueue('vod_asr', '3', '4')
+        self.store.finish(other, 'needs_login')
+        client = Mock()
+        def factory(course):
+            if course == '3':
+                raise AuthenticationRequired()
+            return client
+        self.service.catalog = SimpleNamespace(video_factory=factory)
+        self.store.put('control', 'automation', {'paused': True})
+        self.assertEqual(await self.service.recover_authentication(authenticated=True), 1)
+        self.assertEqual(await self.service.recover_authentication(authenticated=True), 0)
+        self.assertEqual(self.store.execution(blocked)['status'], 'pending')
+        self.assertTrue(self.store.execution(blocked)['options']['automatic'])
+        self.assertIsNone(self.store.claim('vod_asr', allow_automatic=False))
+        self.assertEqual(self.store.execution(cancelled)['status'], 'cancelled')
+        self.assertEqual(self.store.execution(other)['status'], 'needs_login')
+        client.close.assert_called_once()
+
+    async def test_auth_recovery_expires_finished_live_and_requests_replay(self):
+        now = datetime.now(timezone.utc)
+        self.store.put('lectures', '1:live:5', {'id':'5', 'course_id':'1', 'kind':'live', 'end':(now-timedelta(minutes=1)).isoformat()})
+        run = self.store.enqueue('live', '1', '5', options={'automatic':True})
+        self.store.finish(run, 'needs_login')
+        await self.service.recover_authentication(authenticated=True)
+        self.assertEqual(self.store.execution(run)['status'], 'expired')
+        sync = [r for r in self.store.executions() if r['kind'] == 'sync']
+        self.assertEqual(len(sync), 1)
+        self.assertTrue(sync[0]['options']['automatic'])
+
+    async def test_recovery_cannot_resurrect_cancelled_row(self):
+        run = self.store.enqueue('vod_asr', '1', '2')
+        self.store.finish(run, 'needs_login')
+        self.store.cancel(run)
+        self.assertFalse(self.store.recover_auth(run))
+        self.assertFalse(self.store.recover_auth(run, expired=True))
+
+    async def test_auth_maintenance_recovers_persisted_blocked_work(self):
+        run = self.store.enqueue('vod_asr', '1', '2', options={'automatic': True})
+        self.store.finish(run, 'needs_login')
+        self.store.put('control', 'automation', {'paused': True})
+        # A new service sees only persisted work, as after a restart.
+        self.service.browser_auth = SimpleNamespace(
+            automatic_status=lambda: {'enabled': True}, status=lambda: {'authenticated': True})
+        self.service.catalog = SimpleNamespace(video_factory=lambda course: Mock())
+        await self.service.start(automation=False)
+        await self.wait_status(run, 'pending')
+        self.assertEqual(self.calls, [])
 
     async def test_shutdown_recovers_interrupted(self):
         run=self.service.enqueue_processing('1','2','vod_asr',{'wait':True})

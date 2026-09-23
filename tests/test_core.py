@@ -31,7 +31,7 @@ class Boundaries(unittest.TestCase):
         subprocess.run([sys.executable, '-c', code], check=True)
 
     def test_no_reverse_dependencies(self):
-        allowed = {'asr': {'types'}, 'media': {'types'}, 'slides': set(), 'auth': {'types', '_jaccount'},
+        allowed = {'asr': {'types'}, 'media': {'types'}, 'slides': set(), 'qr': set(), 'classroom_events': set(), 'auth': {'types', '_jaccount', 'automatic_login'},
                    'video': {'types'}, 'canvas': {'types'}, '_jaccount': set()}
         for module, imports in allowed.items():
             tree = ast.parse(Path('autocanvas', module+'.py').read_text())
@@ -107,7 +107,11 @@ class VideoTests(unittest.TestCase):
         rows = video.lectures('1',2,'vod')
         self.assertEqual([r['id'] for r in rows], ['1','2'])
         self.assertEqual(len(calls),2)
-        video.get = lambda *a, **k: {'courseDeviceViewDtoList':[{'chanNameMainPlayUrl':'https://example.test/live.m3u8?a=1','mainTokenStr':'a&b','deviViewNum':5}]}
+        def live_get(path, **params):
+            self.assertEqual(path, '/v1/course_vod_videoinfos')
+            self.assertEqual(params, {'courseId': '2', 'playType': 3})
+            return {'courseDeviceViewDtoList':[{'chanNameMainPlayUrl':'https://example.test/live.m3u8?a=1','mainTokenStr':'a&b','deviViewNum':5}]}
+        video.get = live_get
         sources = video.sources('2','live')
         self.assertIn('account_token=a%26b', sources[0].location)
         self.assertNotIn('account_token', repr(sources[0]))
@@ -231,6 +235,33 @@ class ResourceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AuthenticationTests(unittest.TestCase):
+    def test_video_launch_errors_preserve_auth_vs_remote(self):
+        from autocanvas.auth import Auth
+        from autocanvas.types import AuthenticationRequired, RemoteError
+        from requests.exceptions import Timeout
+        from unittest.mock import Mock
+        cases = [
+            (500, 'https://v.sjtu.edu.cn/launch', '', None, RemoteError, 500),
+            (200, 'https://v.sjtu.edu.cn/launch', '<html>unavailable</html>', None, RemoteError, 'unexpected_form'),
+            (200, 'https://jaccount.sjtu.edu.cn/jaccount/jalogin', '', None, AuthenticationRequired, None),
+            (401, 'https://v.sjtu.edu.cn/launch', '', None, AuthenticationRequired, None),
+            (200, 'https://v.sjtu.edu.cn/launch', '', Timeout('private-url?token=secret'), RemoteError, 'Timeout'),
+        ]
+        for status, url, html, failure, expected, code in cases:
+            with self.subTest(status=status, code=code):
+                session = Mock()
+                session.get.return_value = SimpleNamespace(status_code=status, url=url, text=html)
+                session.get.side_effect = failure
+                auth = Auth(Path('unused'))
+                with patch.object(auth, 'session', return_value=session):
+                    with self.assertRaises(expected) as caught:
+                        auth.video('1')
+                session.close.assert_called_once()
+                self.assertNotIn('secret', str(caught.exception))
+                if expected is RemoteError:
+                    self.assertEqual(caught.exception.stage, 'video_launch')
+                    self.assertEqual(caught.exception.code, code)
+
     def test_lti_chain_and_scope(self):
         from autocanvas.auth import Auth
         class Response:

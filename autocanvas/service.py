@@ -17,6 +17,8 @@ class Service:
         self.active = {}
         self.background = []
         self.stopping = False
+        self.configuration = None
+        self.auth_recovery_lock = asyncio.Lock()
 
     def enabled(self, course, feature):
         course_row = self.store.get('courses', str(course), {})
@@ -41,10 +43,63 @@ class Service:
     async def start(self, *, automation=True):
         self.store.recover()
         self.stopping = False
-        for kind in ('sync', 'assignments', 'vod_asr', 'vod_slides', 'live'):
+        for kind in ('sync', 'assignments', ('vod_asr', 'local_asr', 'sample_asr'), ('vod_slides', 'local_slides', 'sample_slides'), 'live'):
             self.background.append(asyncio.create_task(self._worker(kind), name=f'worker:{kind}'))
+        if hasattr(self, 'attendance'):
+            self.background.append(asyncio.create_task(self.attendance.run(), name='live-attendance'))
         if automation:
             self.background.append(asyncio.create_task(self._schedule(), name='automation'))
+        if hasattr(self, 'browser_auth'):
+            self.background.append(asyncio.create_task(self._maintain_auth(), name='authentication'))
+
+    async def recover_authentication(self, *, authenticated=False):
+        async with self.auth_recovery_lock:
+            rows = [r for r in self.store.executions() if r['status'] == 'needs_login']
+            remaining = []
+            restored = 0
+            for row in rows:
+                lecture = self.store.get('lectures', lecture_key(row['course_id'], 'live', row['lecture_id'])) if row['kind'] == 'live' else None
+                if lecture and lecture.get('end') and datetime.fromisoformat(lecture['end']).timestamp() <= time.time():
+                    if self.store.recover_auth(row['id'], expired=True):
+                        self.request_sync(row['course_id'], automatic=row['options'].get('automatic', False))
+                    continue
+                remaining.append(row)
+            if not authenticated:
+                enabled = (await blocking(self.browser_auth.automatic_status)).get('enabled', False)
+                if not enabled and not remaining:
+                    return 0
+                status = await blocking(self.browser_auth.status)
+                if status.get('authenticated') is not True:
+                    return 0
+            courses = {}
+            for row in remaining:
+                if row['kind'] in ('live', 'vod_asr', 'vod_slides', 'sample_asr', 'sample_slides'):
+                    course = row['course_id']
+                    if course not in courses:
+                        def check_course():
+                            client = self.catalog.video_factory(course)
+                            try:
+                                client.context()
+                            finally:
+                                client.close()
+                        try:
+                            await blocking(check_course)
+                            courses[course] = True
+                        except Exception:
+                            courses[course] = False
+                    if not courses[course]:
+                        continue
+                restored += self.store.recover_auth(row['id'])
+            return restored
+
+    async def _maintain_auth(self):
+        # Independent of media automation pause; restored rows retain their options.
+        while True:
+            try:
+                await self.recover_authentication()
+            except Exception as error:
+                log.warning('Authentication recovery deferred: %s', type(error).__name__)
+            await asyncio.sleep(60)
 
     async def close(self):
         self.stopping = True
@@ -56,6 +111,12 @@ class Service:
         self.background.clear()
         self.active.clear()
 
+    def set_automation(self, paused):
+        self.store.put('control', 'automation', {'paused': paused})
+        if not paused and not any(t.get_name() == 'automation' and not t.done() for t in self.background):
+            self.background = [t for t in self.background if t.get_name() != 'automation']
+            self.background.append(asyncio.create_task(self._schedule(), name='automation'))
+
     def cancel(self, run_id):
         changed = self.store.cancel(run_id)
         task = self.active.get(run_id)
@@ -65,7 +126,7 @@ class Service:
 
     async def _sync(self, course_id, automatic=False):
         last = self.store.get('sync', 'courses', {}).get('at', 0)
-        if not self.store.list('courses') or time.time()-last >= self.settings.course_interval:
+        if not automatic or not self.store.list('courses') or time.time()-last >= self.settings.course_interval:
             await blocking(self.catalog.courses)
             self.store.put('sync', 'courses', {'at': time.time()})
         courses = [c for c in self.store.list('courses') if c.get('active') and (course_id == '*' or c['id'] == course_id)]
@@ -93,6 +154,18 @@ class Service:
                 await self._sync(row['course_id'], row['options'].get('automatic', False))
             elif row['kind'] == 'assignments':
                 artifact = await blocking(self.assignments.run, row['course_id'])
+            elif row['kind'].startswith('local_'):
+                from .flows import transcribe_source, slides_source
+                from .types import MediaSource
+                upload = self.store.get('uploads', row['options']['upload_id'])
+                if not upload:
+                    raise LookupError('Upload unavailable')
+                source = MediaSource(str(self.settings.root/'uploads'/upload['file']))
+                folder = self.settings.root/'outputs'/'local'/row['lecture_id']/row['kind']
+                if row['kind'] == 'local_asr':
+                    artifact = await transcribe_source(source, self.replay.transcribe, folder, chunk_seconds=self.settings.chunk_seconds, duration=row['options'].get('duration'))
+                else:
+                    artifact = await slides_source(source, folder, self.settings.root/'cache'/'local'/row['lecture_id'], sample_every=self.settings.sample_every, duration=row['options'].get('duration'))
             else:
                 kind = 'live' if row['kind'] == 'live' else 'vod'
                 lecture = self.store.get('lectures', lecture_key(row['course_id'], kind, row['lecture_id']))
@@ -107,7 +180,14 @@ class Service:
                     artifact = await self.monitor.run(lecture, folder, view=row['options'].get('view'))
                     self.request_sync(row['course_id'])
                 else:
-                    artifact = await self.replay.run(lecture, row['kind'], row['options'])
+                    if row['kind'].startswith('sample_'):
+                        from .flows import Replay
+                        sample = Replay(self.replay.resolve_sources, self.replay.transcribe,
+                                        self.settings.root/'samples'/row['options']['output_key'], self.settings.root/'cache'/run_id,
+                                        chunk_seconds=self.settings.chunk_seconds, sample_every=self.settings.sample_every)
+                        artifact = await sample.run(lecture, row['kind'].replace('sample_', 'vod_'), row['options'])
+                    else:
+                        artifact = await self.replay.run(lecture, row['kind'], row['options'])
             self.store.finish(run_id, 'succeeded', artifact=artifact)
         except asyncio.CancelledError:
             # Explicit cancellation remains cancelled; service shutdown becomes resumable.
@@ -124,13 +204,15 @@ class Service:
 
     async def _worker(self, kind):
         while True:
+            if self.configuration:
+                self.configuration.apply_ready()
             paused = self.store.get('control', 'automation', {}).get('paused', False)
             row = self.store.claim(kind, allow_automatic=not paused)
             if row is None:
                 await asyncio.sleep(0.5)
                 continue
-            if row['options'].get('automatic') and kind in ('vod_asr', 'vod_slides', 'live'):
-                feature = {'vod_asr': 'asr', 'vod_slides': 'slides', 'live': 'live'}[kind]
+            if row['options'].get('automatic') and row['kind'] in ('vod_asr', 'vod_slides', 'live'):
+                feature = {'vod_asr': 'asr', 'vod_slides': 'slides', 'live': 'live'}[row['kind']]
                 if not self.enabled(row['course_id'], feature):
                     self.store.defer(row['id'])
                     await asyncio.sleep(0.1)

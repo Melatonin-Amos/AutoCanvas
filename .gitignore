@@ -17,3 +17,22 @@ slides/
 cache/
 *.sqlite3
 *.sqlite3-*
+credentials.yml
+webui/node_modules/
+webui/dist/
+webui/.env.local
+homework.yml
+dashboard.yml
+# Private local state and credentials
+.env.*
+*.pem
+*.key
+*.log
+*.sqlite
+*.sqlite-*
+.homework-manager/
+.homework-context/
+.codex/
+.claude/
+AGENTS.md
+CLAUDE.md

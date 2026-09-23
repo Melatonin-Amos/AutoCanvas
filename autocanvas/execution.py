@@ -20,6 +20,7 @@ class Inference:
         self.queue = asyncio.PriorityQueue()
         self.sequence = itertools.count()
         self.worker = None
+        self.busy = False
 
     async def transcribe(self, chunk, *, live=False):
         if self.worker is None:
@@ -34,6 +35,7 @@ class Inference:
             try:
                 if future.cancelled():
                     continue
+                self.busy = True
                 result = await blocking(self.recognize, chunk)
                 if not future.done():
                     future.set_result(result)
@@ -41,6 +43,7 @@ class Inference:
                 if not future.done():
                     future.set_exception(error)
             finally:
+                self.busy = False
                 self.queue.task_done()
 
     async def close(self):
