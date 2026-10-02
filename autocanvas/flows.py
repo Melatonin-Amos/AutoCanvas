@@ -124,13 +124,13 @@ async def transcribe_replay(source, transcribe, folder, policy, *, duration=None
     quality = json.loads(quality_path.read_text(encoding='utf-8')) if quality_path.exists() else {
         'windows': 0, 'silence_seconds': 0, 'speech_seconds': 0, 'uncertain_seconds': 0,
         'vad_backend': 'silero' if policy.vad_model else 'energy'}
+    atomic_json(folder/'current.json', {'run_id': run_id})
     if previous.get('state') == 'complete':
         finish_reading(run)
         return run/'transcript.json'
     manifest = {'profile': 'replay-quality', 'run_id': run_id, 'parameters': policy.metadata(),
                 'offset': offset, 'duration': duration, 'view': source.view, 'state': 'processing'}
     atomic_json(manifest_path, manifest)
-    atomic_json(folder/'current.json', {'run_id': run_id})
     remaining = max(0, duration-(start-offset)) if duration is not None else None
     expected_end = offset+duration if duration is not None else None
     if expected_end is None:

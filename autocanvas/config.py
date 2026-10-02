@@ -2,7 +2,6 @@
 from dataclasses import dataclass, field, fields, asdict
 from pathlib import Path
 import json
-import math
 import tomllib
 
 
@@ -43,20 +42,17 @@ class Settings:
                 raise ValueError(f'{key}: 整数超出允许范围')
         if self.live_queue_chunks > 10000:
             raise ValueError('live_queue_chunks: 最大为 10000')
-        for key in ('chunk_seconds', 'sample_every'):
+        for key, lower, upper in (('chunk_seconds', .1, 3600), ('sample_every', .1, 3600),
+                                  ('replay_chunk_seconds', 12, 120), ('replay_max_seconds', 12, 120),
+                                  ('replay_silence_seconds', .1, 5)):
             value = getattr(self, key)
-            if type(value) not in (int, float) or not math.isfinite(value) or not 0.1 <= value <= 3600:
-                raise ValueError(f'{key}: 必须在 0.1 到 3600 秒之间')
-        for key in ('replay_chunk_seconds', 'replay_max_seconds', 'replay_silence_seconds'):
-            value = getattr(self, key)
-            if type(value) not in (int, float) or not math.isfinite(value):
-                raise ValueError(f'{key}: 必须为有限数值')
-        if not 12 <= self.replay_chunk_seconds <= self.replay_max_seconds <= 120:
-            raise ValueError('回放目标长度需在 12 秒到最长语段之间，最长不超过 120 秒')
-        if not .1 <= self.replay_silence_seconds <= 5:
-            raise ValueError('回放停顿长度需在 0.1 到 5 秒之间')
+            # Bounds also reject NaN/infinity without converting large integers to float.
+            if type(value) not in (int, float) or not lower <= value <= upper:
+                raise ValueError(f'{key}: 必须在 {lower} 到 {upper} 秒之间')
+        if self.replay_chunk_seconds > self.replay_max_seconds:
+            raise ValueError('回放目标长度不能超过最长语段')
         if not isinstance(self.replay_vad_model, str) or any(c in self.replay_vad_model for c in '\r\n\x00'):
-            raise ValueError('Invalid VAD model path')
+            raise ValueError('replay_vad_model: 无效的模型路径')
         for key in ('host', 'model', 'device'):
             value = getattr(self, key)
             if not isinstance(value, str) or not value.strip() or len(value) > 1024 or any(c in value for c in '\r\n\x00'):
@@ -80,7 +76,7 @@ class Settings:
         data = {}
         if path:
             path = Path(path)
-            data = tomllib.loads(path.read_text(encoding='utf-8'))
+            data = tomllib.loads(path.read_text(encoding='utf-8-sig'))
             if 'root' in data:
                 data['root'] = (path.resolve().parent / data['root']).resolve()
         if root is not None:

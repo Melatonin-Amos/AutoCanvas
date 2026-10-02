@@ -62,7 +62,7 @@ async def main_async(args, settings):
     from .types import MediaSource, VideoUnavailable
     if args.command == 'reading':
         from .outputs import finish_reading
-        reviewed = json.loads(args.review.read_text(encoding='utf-8')) if args.review else None
+        reviewed = json.loads(args.review.read_text(encoding='utf-8-sig')) if args.review else None
         print(finish_reading(args.folder, reviewed=reviewed))
         return
     if args.command == 'init':

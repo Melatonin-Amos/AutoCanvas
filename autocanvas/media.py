@@ -1,7 +1,6 @@
 """ffmpeg/ffprobe transport, with bounded reads and deterministic process cleanup."""
 import asyncio
 import json
-import subprocess
 from pathlib import Path
 from .types import AudioChunk, MediaError, MediaSource
 
@@ -43,17 +42,7 @@ async def command(args, timeout=60):
 
 async def probe(source):
     args = ['ffprobe', '-v', 'error', *inputs(source), '-show_streams', '-show_format', '-of', 'json', source.location]
-    try:
-        raw = await command(args)
-    except MediaError:
-        # Model-loaded sessions can exhibit already-reaped asyncio children.
-        # Retry independently; never treat empty output as valid metadata.
-        result = await asyncio.to_thread(subprocess.run, args, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, timeout=30)
-        if result.returncode or not result.stdout:
-            raise MediaError('Media metadata unavailable') from None
-        raw = result.stdout
-    return json.loads(raw)
+    return json.loads(await command(args))
 
 
 async def audio(source, *, sample_rate=16000, chunk_seconds=3, offset=0, duration=None, realtime=False):
@@ -91,8 +80,7 @@ async def audio(source, *, sample_rate=16000, chunk_seconds=3, offset=0, duratio
             if len(block) < size:
                 break
         await asyncio.wait_for(proc.wait(), 10)
-        complete_interval = duration is not None and position >= offset+duration-.1
-        if proc.returncode and not (proc.returncode == 255 and complete_interval):
+        if proc.returncode:
             raise MediaError(f'Audio reader exited {proc.returncode}')
     finally:
         async def drain():

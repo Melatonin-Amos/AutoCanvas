@@ -55,27 +55,19 @@ def append_event(path, event):
 
 
 def finish_reading(folder, *, reviewed=None):
-    from .transcript_text import reading_paragraphs, apply_review, separate_editorial, markdown, issues_markdown
+    from .transcript_text import reading_paragraphs, apply_review, markdown, issues_markdown
     signature = hashlib.sha256((folder/'transcript.json').read_bytes()).hexdigest()
     metadata = folder/'reading_manifest.json'
-    previous = {}
-    preserve = False
     if reviewed is None and metadata.is_file():
         previous = json.loads(metadata.read_text(encoding='utf-8'))
         if previous.get('reviewed') and previous.get('raw_sha256') == signature and (folder/'reading.json').is_file():
-            preserve = True
+            return folder/'reading.json'
     rows = json.loads((folder/'transcript.json').read_text(encoding='utf-8'))
     paragraphs, edits = reading_paragraphs(rows)
-    sources = paragraphs
-    if preserve:
-        paragraphs = json.loads((folder/'reading.json').read_text(encoding='utf-8'))
-        edits = json.loads((folder/'edits.json').read_text(encoding='utf-8'))
-    elif reviewed is not None:
+    if reviewed is not None:
         paragraphs, review_edits = apply_review(paragraphs, reviewed)
         edits.extend(review_edits)
-    paragraphs, moved_notes = separate_editorial(paragraphs, sources)
-    edits.extend(moved_notes)
-    issues = [e for e in edits if e.get('reason') in ('uncertain_content', 'editorial_note_moved')]
+    issues = [e for e in edits if e.get('reason') == 'uncertain_content']
     atomic_json(folder/'reading.json', paragraphs)
     atomic_json(folder/'edits.json', edits)
     atomic_json(folder/'issues.json', issues)
@@ -86,7 +78,7 @@ def finish_reading(folder, *, reviewed=None):
         temporary = path.with_suffix(path.suffix+'.tmp')
         temporary.write_text(text, encoding='utf-8')
         temporary.replace(path)
-    atomic_json(metadata, {'version': 4, 'raw_sha256': signature, 'reviewed': reviewed is not None or preserve,
+    atomic_json(metadata, {'version': 4, 'raw_sha256': signature, 'reviewed': reviewed is not None,
                           'content_outcome': 'reading_available' if paragraphs else 'empty_reading',
                           'issue_count': len(issues),
                           'explicit_edit_count': sum(e.get('reason') == 'explicit_review' for e in edits)})

@@ -4,7 +4,7 @@
 
 回放默认使用独立的长语段流程，直播仍读取 `chunk_seconds` 的短块。设置 `replay_chunk_seconds`
 （默认 30）、`replay_max_seconds`（默认 45）和 `replay_silence_seconds`（默认 0.6）。
-语段优先在停顿切分，最短约为目标长度的 80%，不是每三秒独立识别。通过 `replay_vad_model`
+语段优先在停顿切分，下限为目标长度的 80% 与 24 秒中的较小值；结尾不足一段时保留实际长度。通过 `replay_vad_model`
 指定已下载的官方 Silero TorchScript 文件；留空时使用较保守的能量检测。模型只从本地加载。
 
 ```sh
@@ -23,7 +23,8 @@ python -m autocanvas --config config.toml transcribe audio.wav --output runtime/
 中断仅从已经写入的完整语段续跑；空白时间也保存，网络提前结束不会冒充完成。
 
 阅读稿只做段落组织和轻度口语清理，保留“对”“是”等回答；每段带原始语段编号。
-编辑后的数值、变量、单位和逻辑条件会接受机械校验，校验通过仍不等于语义完全正确。
+编辑后会检查数值、拉丁/希腊符号、常见单位的出现顺序，以及常见否定/条件词的数量。
+这是保守的机械预检，不能证明数值关系或语义正确，涉及重排这些内容时需要人工核对。
 显式校对可导入每段 `{"segment_ids": [...], "text": "..."}` 的 JSON 数组。
 正文只放课堂内容；无法可靠恢复的术语或完整语句可以移到 `issues`，必须引用该段的原文：
 
@@ -34,7 +35,8 @@ python -m autocanvas --config config.toml transcribe audio.wav --output runtime/
 ```
 
 疑点保存为独立的 `issues.json` / `issues.md`，带时间范围和原始语段编号。
-导入时会拒绝新增的“原识别为……待课件核对”等正文说明，也不允许把单个否定词或数字挪走来绕过校验。
+识别说明由审校者放入 `issues`，正文不依靠关键词自动删改；原有已审校内容保持不变。
+疑点必须引用来源，不允许单独挪走否定词、数字或词的一部分来绕过预检。
 
 ```sh
 python -m autocanvas reading /path/to/run --review reviewed.json
@@ -58,6 +60,9 @@ python -m autocanvas reading /path/to/run --review reviewed.json
 ## 环境与启动
 
 Python 3.11+，系统需要 `ffmpeg` 和 `ffprobe`。可使用虚拟环境或 conda；模型从本地 Hugging Face 缓存读取，不自动下载。
+
+项目生成的文字文件统一写为 UTF-8。手写 TOML 配置、审校 JSON 和术语 JSON 也可使用
+带 BOM 的 UTF-8；旧 GBK / UTF-16 文件需先转换，程序不猜测编码或忽略解码错误。
 
 Linux、Windows 和 Apple Silicon MacBook 共用 Python / WebUI 流程，不依赖本地 `.sh`
 启动脚本。`device = "auto"` 在首次识别时选择 CUDA、MPS 或 CPU，也可以明确指定

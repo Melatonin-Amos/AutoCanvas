@@ -39,10 +39,7 @@ dashboard.yml
 AGENTS.md
 CLAUDE.md
 
-# Local test additions and generated reports must not enter this release.
-# Existing upstream tests remain tracked and are not changed by these patterns.
-/tests/
-/webui/tests/
+# Generated test reports
 /.pytest_cache/
 /.coverage
 /htmlcov/

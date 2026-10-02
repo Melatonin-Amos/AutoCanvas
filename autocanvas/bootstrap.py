@@ -61,7 +61,7 @@ def build(settings):
         path = settings.root/'contexts'/f'{cid}.json'
         if not path.is_file():
             return ''
-        terms = json.loads(path.read_text(encoding='utf-8')).get('terms', [])
+        terms = json.loads(path.read_text(encoding='utf-8-sig')).get('terms', [])
         if not isinstance(terms, list) or len(terms) > 50 or any(not isinstance(t, str) or len(t) > 60 for t in terms):
             raise ValueError('Invalid verified course vocabulary')
         return '词语参考：'+ '、'.join(dict.fromkeys(terms)) if terms else ''
