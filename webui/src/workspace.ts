@@ -152,12 +152,17 @@ export const slideFiles = (group: ArtifactLesson) =>
     .sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }));
 export const transcriptFiles = (group: ArtifactLesson) =>
   group.files.filter((f) =>
-    /\/(transcript\.json|segments\.jsonl|transcript\.txt)$/.test(f.path),
+    /\/(transcript\.json|segments\.jsonl|transcript\.txt|reading\.(json|txt|md))$/.test(
+      f.path,
+    ),
   );
 export function fileLabel(file: OutputFile) {
   const names: Record<string, string> = {
     "transcript.json": "分段转写",
     "transcript.txt": "文字稿",
+    "reading.json": "段落阅读稿",
+    "reading.txt": "段落文字稿",
+    "reading.md": "阅读稿 Markdown",
     "segments.jsonl": "实时转写",
     "slides.json": "画面时间索引",
     "qr.json": "二维码检测报告",

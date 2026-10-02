@@ -2,6 +2,8 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
+.local-setup/
+/start-local.sh
 .env
 config.toml
 runtime/
@@ -36,3 +38,11 @@ dashboard.yml
 .claude/
 AGENTS.md
 CLAUDE.md
+
+# Local test additions and generated reports must not enter this release.
+# Existing upstream tests remain tracked and are not changed by these patterns.
+/tests/
+/webui/tests/
+/.pytest_cache/
+/.coverage
+/htmlcov/

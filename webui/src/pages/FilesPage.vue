@@ -135,8 +135,11 @@ const transcriptOptions = computed(() => {
     ...new Set(rows.map((f) => f.path.slice(0, f.path.lastIndexOf("/")))),
   ];
   return folders
-    .map(
-      (folder) =>
+    .flatMap((folder) => {
+      const reading = rows.find(
+        (f) => f.path === folder + "/reading.json" && f.size > 2,
+      );
+      const raw =
         rows.find(
           (f) =>
             f.path ===
@@ -147,12 +150,16 @@ const transcriptOptions = computed(() => {
         ) ||
         rows.find((f) => f.path === folder + "/segments.jsonl" && f.size > 0) ||
         rows.find((f) => f.path === folder + "/transcript.txt") ||
-        rows.find((f) => f.path.startsWith(folder + "/")),
-    )
+        rows.find((f) => f.path.startsWith(folder + "/"));
+      return [reading, raw];
+    })
     .filter((f): f is OutputFile => !!f)
     .sort(
       (a, b) =>
-        Number(a.path.includes("/live/")) - Number(b.path.includes("/live/")),
+        Number(a.path.includes("/live/")) - Number(b.path.includes("/live/")) ||
+        Number(!a.path.endsWith("/reading.json")) -
+          Number(!b.path.endsWith("/reading.json")) ||
+        b.modified - a.modified,
     );
 });
 const dataOptions = computed(
@@ -160,7 +167,9 @@ const dataOptions = computed(
     selected.value?.files.filter(
       (f) =>
         /\.(json|jsonl|txt)$/i.test(f.path) &&
-        !/\/(transcript\.(json|txt)|segments.jsonl)$/.test(f.path),
+        !/\/(transcript\.(json|txt)|segments.jsonl|reading\.(json|txt))$/.test(
+          f.path,
+        ),
     ) || [],
 );
 const options = computed(() =>

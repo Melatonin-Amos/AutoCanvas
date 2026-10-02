@@ -163,7 +163,8 @@ class Service:
                 source = MediaSource(str(self.settings.root/'uploads'/upload['file']))
                 folder = self.settings.root/'outputs'/'local'/row['lecture_id']/row['kind']
                 if row['kind'] == 'local_asr':
-                    artifact = await transcribe_source(source, self.replay.transcribe, folder, chunk_seconds=self.settings.chunk_seconds, duration=row['options'].get('duration'))
+                    artifact = await transcribe_source(source, self.replay.transcribe, folder, chunk_seconds=self.settings.chunk_seconds,
+                        duration=row['options'].get('duration'), policy=getattr(self.replay, 'policy', None))
                 else:
                     artifact = await slides_source(source, folder, self.settings.root/'cache'/'local'/row['lecture_id'], sample_every=self.settings.sample_every, duration=row['options'].get('duration'))
             else:
@@ -184,7 +185,9 @@ class Service:
                         from .flows import Replay
                         sample = Replay(self.replay.resolve_sources, self.replay.transcribe,
                                         self.settings.root/'samples'/row['options']['output_key'], self.settings.root/'cache'/run_id,
-                                        chunk_seconds=self.settings.chunk_seconds, sample_every=self.settings.sample_every)
+                                        chunk_seconds=self.settings.chunk_seconds, sample_every=self.settings.sample_every,
+                                        policy=getattr(self.replay, 'policy', None),
+                                        context_loader=getattr(self.replay, 'context_loader', None))
                         artifact = await sample.run(lecture, row['kind'].replace('sample_', 'vod_'), row['options'])
                     else:
                         artifact = await self.replay.run(lecture, row['kind'], row['options'])

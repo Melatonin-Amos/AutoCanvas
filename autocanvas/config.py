@@ -23,12 +23,17 @@ class Settings:
     model: str = 'Qwen/Qwen3-ASR-0.6B'
     device: str = 'mps'
     chunk_seconds: float = 3
+    replay_quality: bool = True
+    replay_chunk_seconds: float = 30
+    replay_max_seconds: float = 45
+    replay_silence_seconds: float = .6
+    replay_vad_model: str = ''
     sample_every: float = 5
     keywords: list[str] = field(default_factory=lambda: ['签到', '点名', '名字'])
     keyword_debounce: int = 30
 
     def validate(self):
-        for key in ('auto_asr', 'auto_slides', 'auto_live'):
+        for key in ('auto_asr', 'auto_slides', 'auto_live', 'replay_quality'):
             if type(getattr(self, key)) is not bool:
                 raise ValueError(f'{key}: 必须为布尔值')
         for key in ('port', 'course_interval', 'sync_interval', 'schedule_interval', 'live_lead_seconds', 'live_queue_chunks', 'keyword_debounce'):
@@ -42,6 +47,16 @@ class Settings:
             value = getattr(self, key)
             if type(value) not in (int, float) or not math.isfinite(value) or not 0.1 <= value <= 3600:
                 raise ValueError(f'{key}: 必须在 0.1 到 3600 秒之间')
+        for key in ('replay_chunk_seconds', 'replay_max_seconds', 'replay_silence_seconds'):
+            value = getattr(self, key)
+            if type(value) not in (int, float) or not math.isfinite(value):
+                raise ValueError(f'{key}: 必须为有限数值')
+        if not 12 <= self.replay_chunk_seconds <= self.replay_max_seconds <= 120:
+            raise ValueError('回放目标长度需在 12 秒到最长语段之间，最长不超过 120 秒')
+        if not .1 <= self.replay_silence_seconds <= 5:
+            raise ValueError('回放停顿长度需在 0.1 到 5 秒之间')
+        if not isinstance(self.replay_vad_model, str) or any(c in self.replay_vad_model for c in '\r\n\x00'):
+            raise ValueError('Invalid VAD model path')
         for key in ('host', 'model', 'device'):
             value = getattr(self, key)
             if not isinstance(value, str) or not value.strip() or len(value) > 1024 or any(c in value for c in '\r\n\x00'):

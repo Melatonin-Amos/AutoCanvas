@@ -9,6 +9,14 @@ def execution_progress(root: Path, row):
         folder = root/'samples'/row['options']['output_key']/row['course_id']/row['lecture_id']/kind.replace('sample_', 'vod_')
     else:
         folder = root/'outputs'/row['course_id']/row['lecture_id']/kind
+    current = folder/'current.json'
+    if current.is_file():
+        try:
+            run_id = json.loads(current.read_text(encoding='utf-8'))['run_id']
+            if isinstance(run_id, str) and len(run_id) == 16 and all(c in '0123456789abcdef' for c in run_id):
+                folder = folder/'runs'/run_id
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
     result = {'processed_seconds': 0, 'events': []}
     segments = folder/'segments.jsonl'
     if segments.exists():

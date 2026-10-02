@@ -1,6 +1,7 @@
 """ffmpeg/ffprobe transport, with bounded reads and deterministic process cleanup."""
 import asyncio
 import json
+import subprocess
 from pathlib import Path
 from .types import AudioChunk, MediaError, MediaSource
 
@@ -41,7 +42,17 @@ async def command(args, timeout=60):
 
 
 async def probe(source):
-    raw = await command(['ffprobe', '-v', 'error', *inputs(source), '-show_streams', '-show_format', '-of', 'json', source.location])
+    args = ['ffprobe', '-v', 'error', *inputs(source), '-show_streams', '-show_format', '-of', 'json', source.location]
+    try:
+        raw = await command(args)
+    except MediaError:
+        # Model-loaded sessions can exhibit already-reaped asyncio children.
+        # Retry independently; never treat empty output as valid metadata.
+        result = await asyncio.to_thread(subprocess.run, args, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, timeout=30)
+        if result.returncode or not result.stdout:
+            raise MediaError('Media metadata unavailable') from None
+        raw = result.stdout
     return json.loads(raw)
 
 
@@ -50,6 +61,10 @@ async def audio(source, *, sample_rate=16000, chunk_seconds=3, offset=0, duratio
     if size <= 0:
         raise ValueError('Audio chunk size must be positive')
     args = ['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', *inputs(source)]
+    if source.location.startswith(('http://', 'https://')):
+        args += ['-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_on_network_error', '1',
+                 '-reconnect_on_http_error', '429,500,502,503,504', '-reconnect_delay_max', '5',
+                 '-reconnect_max_retries', '3', '-reconnect_delay_total_max', '20']
     if realtime:
         args += ['-re']
     if offset:
@@ -76,10 +91,21 @@ async def audio(source, *, sample_rate=16000, chunk_seconds=3, offset=0, duratio
             if len(block) < size:
                 break
         await asyncio.wait_for(proc.wait(), 10)
-        if proc.returncode:
+        complete_interval = duration is not None and position >= offset+duration-.1
+        if proc.returncode and not (proc.returncode == 255 and complete_interval):
             raise MediaError(f'Audio reader exited {proc.returncode}')
     finally:
-        await stop(proc)
+        async def drain():
+            while await proc.stdout.read(65536):
+                pass
+        draining = asyncio.create_task(drain())
+        try:
+            await asyncio.wait_for(stop(proc), 12)
+        finally:
+            if proc.returncode is None:
+                proc.kill()
+            draining.cancel()
+            await asyncio.gather(draining, return_exceptions=True)
 
 
 async def sample_frames(source, destination: Path, *, every=5, duration=None):

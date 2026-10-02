@@ -1,5 +1,6 @@
 """Composition root; the only place that assembles concrete module dependencies."""
 import os
+import json
 from contextlib import contextmanager
 from .auth import Auth
 from .canvas import Canvas
@@ -46,12 +47,28 @@ def build(settings):
     store = Store(settings.root/'state.sqlite3')
     catalog = CatalogSync(canvas, lambda course: Video(auth.video(course)), store, settings.course_ids)
     assignments = AssignmentSync(canvas, auth.session, store, settings.root/'assignments')
-    inference = Inference(Recognizer(settings.model, settings.device).transcribe)
+    recognizer = Recognizer(settings.model, settings.device)
+    inference = Inference(recognizer.transcribe, recognizer.transcribe_batch, lambda: recognizer.batch_limit)
 
     async def resolve(lecture):
         return await blocking(catalog.sources, lecture)
 
-    replay = Replay(resolve, inference.transcribe, settings.root/'outputs', settings.root/'cache', chunk_seconds=settings.chunk_seconds, sample_every=settings.sample_every)
+    from .replay_asr import ReplayPolicy
+    def course_context(lecture):
+        cid = str(lecture['course_id'])
+        if not cid.isdigit():
+            raise ValueError('Invalid course context identifier')
+        path = settings.root/'contexts'/f'{cid}.json'
+        if not path.is_file():
+            return ''
+        terms = json.loads(path.read_text(encoding='utf-8')).get('terms', [])
+        if not isinstance(terms, list) or len(terms) > 50 or any(not isinstance(t, str) or len(t) > 60 for t in terms):
+            raise ValueError('Invalid verified course vocabulary')
+        return '词语参考：'+ '、'.join(dict.fromkeys(terms)) if terms else ''
+    replay = Replay(resolve, inference.transcribe, settings.root/'outputs', settings.root/'cache',
+                    chunk_seconds=settings.chunk_seconds, sample_every=settings.sample_every,
+                    policy=ReplayPolicy.from_settings(settings) if settings.replay_quality else None,
+                    context_loader=course_context)
     monitor = LiveMonitor(resolve, inference.transcribe, queue_chunks=settings.live_queue_chunks, chunk_seconds=settings.chunk_seconds,
                           keywords=settings.keywords, debounce=settings.keyword_debounce)
     service = Service(settings, store, catalog, assignments, replay, monitor)
@@ -60,8 +77,11 @@ def build(settings):
 
     def apply_idle(values, changed):
         if changed & {'model', 'device'}:
-            inference.recognize = Recognizer(values['model'], values['device']).transcribe
+            recognizer = Recognizer(values['model'], values['device'])
+            inference.recognize, inference.recognize_batch = recognizer.transcribe, recognizer.transcribe_batch
+            inference.batch_limit = lambda: recognizer.batch_limit
         replay.chunk_seconds, replay.sample_every = values['chunk_seconds'], values['sample_every']
+        replay.policy = ReplayPolicy.from_settings(Settings(**values).validate()) if values['replay_quality'] else None
         service.monitor = LiveMonitor(resolve, inference.transcribe, queue_chunks=values['live_queue_chunks'],
                                       chunk_seconds=values['chunk_seconds'], keywords=values['keywords'], debounce=values['keyword_debounce'])
 

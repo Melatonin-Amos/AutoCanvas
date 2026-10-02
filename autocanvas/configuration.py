@@ -4,6 +4,7 @@ from .outputs import atomic_json
 
 RESTART = {'root', 'host', 'port'}
 IDLE = {'model', 'device', 'chunk_seconds', 'sample_every', 'live_queue_chunks', 'keywords', 'keyword_debounce'}
+IDLE |= {'replay_quality', 'replay_chunk_seconds', 'replay_max_seconds', 'replay_silence_seconds', 'replay_vad_model'}
 LABELS = {
     'root': ('运行数据目录', '服务'), 'host': ('监听地址', '服务'), 'port': ('监听端口', '服务'),
     'course_ids': ('同步课程白名单（留空表示全部）', '自动化'),
@@ -11,7 +12,12 @@ LABELS = {
     'course_interval': ('课表同步间隔 / 秒', '自动化'), 'sync_interval': ('视频和作业同步间隔 / 秒', '自动化'),
     'schedule_interval': ('调度检查间隔 / 秒', '自动化'), 'live_lead_seconds': ('直播提前启动 / 秒', '直播'),
     'live_queue_chunks': ('直播音频队列容量 / 块', '直播'), 'model': ('本地模型名称或路径', '转写'),
-    'device': ('推理设备', '转写'), 'chunk_seconds': ('音频块长度 / 秒', '转写'), 'sample_every': ('画面采样间隔 / 秒', 'Slides'),
+    'device': ('推理设备', '转写'), 'chunk_seconds': ('直播音频块长度 / 秒', '直播'), 'sample_every': ('画面采样间隔 / 秒', 'Slides'),
+    'replay_quality': ('回放语段识别与阅读稿', '回放转写'),
+    'replay_chunk_seconds': ('回放目标语段长度 / 秒', '回放转写'),
+    'replay_max_seconds': ('回放最长语段 / 秒', '回放转写'),
+    'replay_silence_seconds': ('回放切分停顿 / 秒', '回放转写'),
+    'replay_vad_model': ('本地 VAD 模型路径（留空使用能量检测）', '回放转写'),
     'keywords': ('监听关键词', '直播'), 'keyword_debounce': ('关键词防抖间隔 / 秒', '直播'),
 }
 

@@ -1,5 +1,56 @@
 # AutoCanvas V2
 
+## 回放阅读稿
+
+回放默认使用独立的长语段流程，直播仍读取 `chunk_seconds` 的短块。设置 `replay_chunk_seconds`
+（默认 30）、`replay_max_seconds`（默认 45）和 `replay_silence_seconds`（默认 0.6）。
+语段优先在停顿切分，最短约为目标长度的 80%，不是每三秒独立识别。通过 `replay_vad_model`
+指定已下载的官方 Silero TorchScript 文件；留空时使用较保守的能量检测。模型只从本地加载。
+
+```sh
+python -m autocanvas --config config.toml transcribe audio.wav --output runtime/local/lecture
+python -m autocanvas --config config.toml transcribe audio.wav --output runtime/local/legacy --legacy
+python -m autocanvas --config config.toml transcribe audio.wav --output runtime/local/lecture --context '已核对的术语'
+```
+
+离线 `transcribe --model /local/model/path` 可单独测试较大模型，不修改已保存的模型设置。
+按课程使用术语时，在 `runtime/contexts/<course_id>.json` 写入 `{"terms": ["已核对的术语"]}`。
+词表是识别提示，不能作为补写未听清内容的依据。
+
+原有三秒稿保留。新回放结果写到 `vod_asr/runs/<参数指纹>/`，包含原始
+`segments.jsonl`、`transcript.json`、`transcript.txt`、段落版 `reading.json/md/txt`、
+`edits.json` 和处理清单。指纹包括模型、VAD 校验和、切分参数、词表、音源和试跑区间。
+中断仅从已经写入的完整语段续跑；空白时间也保存，网络提前结束不会冒充完成。
+
+阅读稿只做段落组织和轻度口语清理，保留“对”“是”等回答；每段带原始语段编号。
+编辑后的数值、变量、单位和逻辑条件会接受机械校验，校验通过仍不等于语义完全正确。
+显式校对可导入每段 `{"segment_ids": [...], "text": "..."}` 的 JSON 数组。
+正文只放课堂内容；无法可靠恢复的术语或完整语句可以移到 `issues`，必须引用该段的原文：
+
+```json
+{"segment_ids": [0], "text": "本节介绍基本概念。", "issues": [
+  {"source_text": "unclearTerm", "reason": "术语识别不确定"}
+]}
+```
+
+疑点保存为独立的 `issues.json` / `issues.md`，带时间范围和原始语段编号。
+导入时会拒绝新增的“原识别为……待课件核对”等正文说明，也不允许把单个否定词或数字挪走来绕过校验。
+
+```sh
+python -m autocanvas reading /path/to/run --review reviewed.json
+```
+
+已校对阅读稿不会被同一原始稿的重新格式化覆盖。前端优先打开段落阅读稿，原始稿仍可选择。
+时间标记是语段范围，不是逐字对齐。语义润色不会自动调用外部模型或上传音频。
+
+回放最多预读十六个完整语段，让解码、CPU 语音检测与 GPU 推理交叠进行。排队时保留最早
+请求，优先选择长度相近、术语上下文相同的语段，减少批内填充和等待。CUDA 模型合批识别
+最多八段，填充音频预算不超过 300 秒，共用一份模型；显存不足时自动减小批次并重试。输出仍按时间顺序逐段
+保存，失败时不会跨过未成功识别的语段。该优化不缩短语段，也不增加一轮模型润色调用。
+
+直播任务仍优先入队，但正在推理的回放语段不能中途抢占。较大的离线模型建议单独运行；
+切勿把语音活动检测分数、文件完成状态或段落更顺当作识别准确率。
+
 新版 Canvas 视频接入、独立本地转写与 Slides 抽取，以及外层自动化控制。
 
 登录鉴权、Canvas 数据查询、视频地址解析、媒体读取、ASR、Slides 各自独立。没有插件加载、Gateway 或 Job 注册机制。ASR 不知道视频 URL，Slides 不知道课程 ID，功能模块不访问执行数据库。

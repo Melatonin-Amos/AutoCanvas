@@ -36,6 +36,11 @@ def parser():
         cmd.add_argument('source')
         cmd.add_argument('--output', required=True, type=Path)
         cmd.add_argument('--duration', type=float)
+        if name == 'transcribe':
+            cmd.add_argument('--offset', type=float, default=0)
+            cmd.add_argument('--legacy', action='store_true', help='Use the legacy fixed short blocks')
+            cmd.add_argument('--context', default='', help='Verified course vocabulary hints')
+            cmd.add_argument('--model', help='Offline-only model override; does not modify saved settings')
     proc = sub.add_parser('process')
     proc.add_argument('course')
     proc.add_argument('lecture')
@@ -43,6 +48,11 @@ def parser():
     proc.add_argument('--view')
     proc.add_argument('--duration', type=float, help='Bounded replay verification; use a separate runtime for samples')
     proc.add_argument('--retry', action='store_true')
+    proc.add_argument('--profile', choices=['quality','legacy'], default='quality')
+    proc.add_argument('--offset', type=float, default=0)
+    reading = sub.add_parser('reading', help='Regenerate reading text or apply explicit reviewed paragraphs')
+    reading.add_argument('folder', type=Path)
+    reading.add_argument('--review', type=Path)
     return p
 
 
@@ -50,6 +60,11 @@ async def main_async(args, settings):
     from .auth import Auth
     from .bootstrap import build, service_lock
     from .types import MediaSource, VideoUnavailable
+    if args.command == 'reading':
+        from .outputs import finish_reading
+        reviewed = json.loads(args.review.read_text(encoding='utf-8')) if args.review else None
+        print(finish_reading(args.folder, reviewed=reviewed))
+        return
     if args.command == 'init':
         settings.root.mkdir(parents=True, exist_ok=True)
         settings.root.chmod(0o700)
@@ -76,9 +91,17 @@ async def main_async(args, settings):
             raise ValueError('duration must be positive')
         source = MediaSource(args.source)
         if args.command == 'transcribe':
-            inference = Inference(Recognizer(settings.model, settings.device).transcribe)
+            from .replay_asr import ReplayPolicy
+            from dataclasses import replace
+            policy = ReplayPolicy.from_settings(settings, args.context) if settings.replay_quality and not args.legacy else None
+            model = args.model or settings.model
+            if policy is not None:
+                policy = replace(policy, model_identity=model)
+            recognizer = Recognizer(model, settings.device)
+            inference = Inference(recognizer.transcribe, recognizer.transcribe_batch, lambda: recognizer.batch_limit)
             try:
-                output = await transcribe_source(source, inference.transcribe, args.output, chunk_seconds=settings.chunk_seconds, duration=args.duration)
+                output = await transcribe_source(source, inference.transcribe, args.output,
+                    chunk_seconds=settings.chunk_seconds, duration=args.duration, offset=args.offset, policy=policy)
             finally:
                 await inference.close()
         else:
@@ -165,14 +188,16 @@ async def main_async(args, settings):
                     from .flows import Replay
                     sample = Replay(service.replay.resolve_sources, inference.transcribe,
                                     settings.root/'samples', settings.root/'sample_cache',
-                                    chunk_seconds=settings.chunk_seconds, sample_every=settings.sample_every)
+                                    chunk_seconds=settings.chunk_seconds, sample_every=settings.sample_every,
+                                    policy=service.replay.policy if args.profile == 'quality' else None,
+                                    context_loader=service.replay.context_loader)
                     lecture = service.store.get('lectures', lecture_key(args.course, 'vod', args.lecture))
                     for kind in kinds:
-                        result = await sample.run(lecture, kind, {'duration':args.duration, 'view':args.view})
+                        result = await sample.run(lecture, kind, {'duration':args.duration, 'view':args.view, 'offset':args.offset})
                         print(json.dumps({'sample_only':True, 'kind':kind, 'artifact':str(result)}))
                     return
                 for kind in kinds:
-                    options = {k:v for k,v in {'view':args.view, 'duration':args.duration}.items() if v is not None}
+                    options = {k:v for k,v in {'view':args.view, 'duration':args.duration, 'profile':args.profile, 'offset':args.offset}.items() if v is not None}
                     run_id = service.enqueue_processing(args.course, args.lecture, kind, options, force=args.retry)
                     service.store.recover()
                     while True:

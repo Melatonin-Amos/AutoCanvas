@@ -10,13 +10,17 @@ import SearchText from "./SearchText.vue";
 const props = defineProps<{ file: OutputFile }>();
 const search = ref(""),
   page = ref(1),
-  mode = ref("timeline");
+  mode = ref(
+    props.file.path.endsWith("/reading.json") ? "reading" : "timeline",
+  );
 watch(
   () => props.file.path,
   () => {
     search.value = "";
     page.value = 1;
-    mode.value = "timeline";
+    mode.value = props.file.path.endsWith("/reading.json")
+      ? "reading"
+      : "timeline";
   },
 );
 watch(search, () => (page.value = 1));
@@ -90,7 +94,9 @@ const filtered = computed(() =>
 );
 const text = computed(() =>
   segments.value.length
-    ? segments.value.map((s) => s.text).join("\n")
+    ? segments.value
+        .map((s) => s.text)
+        .join(props.file.path.endsWith("/reading.json") ? "\n\n" : "\n")
     : content.data.value || "",
 );
 const paragraphs = computed(() =>

@@ -15,6 +15,12 @@ live_queue_chunks = 100
 model = "Qwen/Qwen3-ASR-0.6B"
 device = "mps"
 chunk_seconds = 3.0
+# Replay is independent of live detection. Optional local Silero TorchScript model.
+replay_quality = true
+replay_chunk_seconds = 30.0
+replay_max_seconds = 45.0
+replay_silence_seconds = 0.6
+replay_vad_model = ""
 sample_every = 5.0
 keywords = ["签到", "点名", "名字"]
 keyword_debounce = 30
