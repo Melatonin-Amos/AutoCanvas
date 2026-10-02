@@ -89,7 +89,7 @@ class AutomaticLogin:
 
     def state(self):
         config = self.credentials.metadata()
-        state = json.loads(self.path.read_text()) if self.path.exists() else {}
+        state = json.loads(self.path.read_text(encoding='utf-8')) if self.path.exists() else {}
         if state.get('config_revision') != config['config_revision']:
             state = {}
         return {'blocked': False, 'failures': 0, 'next_attempt': 0, **state, **config}
@@ -98,7 +98,7 @@ class AutomaticLogin:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix('.tmp')
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, 'w') as handle:
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
             json.dump(state, handle)
         temporary.replace(self.path)
         self.path.chmod(0o600)

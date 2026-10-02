@@ -19,7 +19,7 @@ def snapshot(folder):
             path=Path(base)/name
             try:
                 if path.is_symlink():continue
-                stat=path.stat();result[str(path.relative_to(folder))]=[stat.st_size,stat.st_mtime_ns]
+                stat=path.stat();result[path.relative_to(folder).as_posix()]=[stat.st_size,stat.st_mtime_ns]
             except OSError:pass
     return result
 

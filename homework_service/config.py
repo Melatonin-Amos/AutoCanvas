@@ -27,7 +27,7 @@ class Settings:
 
     @classmethod
     def load(cls, path=None):
-        values = yaml.safe_load(Path(path).read_text()) if path and Path(path).exists() else {}
+        values = yaml.safe_load(Path(path).read_text(encoding='utf-8')) if path and Path(path).exists() else {}
         values = values or {}
         if not isinstance(values, dict):
             raise ValueError('配置必须为 YAML 对象')

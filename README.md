@@ -59,12 +59,22 @@ python -m autocanvas reading /path/to/run --review reviewed.json
 
 Python 3.11+，系统需要 `ffmpeg` 和 `ffprobe`。可使用虚拟环境或 conda；模型从本地 Hugging Face 缓存读取，不自动下载。
 
+Linux、Windows 和 Apple Silicon MacBook 共用 Python / WebUI 流程，不依赖本地 `.sh`
+启动脚本。`device = "auto"` 在首次识别时选择 CUDA、MPS 或 CPU，也可以明确指定
+`cuda:0`、`mps`、`cpu`。CUDA 使用支持的 BF16，MPS / CPU 使用 FP32 和单段推理。
+PyTorch 请按[官方安装页面](https://pytorch.org/get-started/locally/)选择对应系统的版本；
+`ffmpeg` 和 `ffprobe` 都需加入 PATH。当前实测平台是 Linux / NVIDIA；Windows 和
+Mac 的代码兼容检查不能替代真机验证，Intel Mac 的依赖组合尚未验证。
+
 ```sh
 cd /path/to/AutoCanvas
 python -m venv .venv
 source .venv/bin/activate
 python -m autocanvas --help
 ```
+
+Windows PowerShell 激活命令为 `.\.venv\Scripts\Activate.ps1`，其余 `python -m ...`
+命令相同；也可直接使用 `.\.venv\Scripts\python.exe`，无需修改 PowerShell 执行策略。
 
 安装到其他环境：`python -m pip install -e '.[asr,slides]'`。仅登录、查询与 HTTP 功能可以只安装基础依赖；ASR 和 Slides 的重依赖延迟加载。
 

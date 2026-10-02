@@ -5,7 +5,7 @@ from .types import AudioChunk, TranscriptSegment
 
 
 class Recognizer:
-    def __init__(self, model='Qwen/Qwen3-ASR-0.6B', device='mps', language='Chinese', silence=0.005):
+    def __init__(self, model='Qwen/Qwen3-ASR-0.6B', device='auto', language='Chinese', silence=0.005):
         self.model_name, self.device, self.language, self.silence = model, device, language, silence
         self._model = None
         self._lock = Lock()
@@ -33,6 +33,10 @@ class Recognizer:
             if self._model is None:
                 import torch
                 from qwen_asr import Qwen3ASRModel
+                if self.device == 'auto':
+                    self.device = ('cuda:0' if torch.cuda.is_available() else
+                                   'mps' if torch.backends.mps.is_available() else 'cpu')
+                    self.batch_limit = 8 if self.device.startswith('cuda') else 1
                 dtype = torch.bfloat16 if self.device.startswith('cuda') and torch.cuda.is_bf16_supported() else torch.float32
                 model_path = Path(self.model_name).expanduser()
                 if not model_path.is_dir():

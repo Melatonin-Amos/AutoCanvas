@@ -79,8 +79,13 @@ def _find_slide_bbox(gray: np.ndarray) -> tuple[int, int, int, int]:
         return (0, 0, gray.shape[1], gray.shape[0])
     return (int(x), int(y), int(x + w), int(y + h))
 
+def _read_image(path: Path) -> Optional[np.ndarray]:
+    # Python handles Unicode filenames on Windows; OpenCV receives only image bytes.
+    data = np.frombuffer(Path(path).read_bytes(), dtype=np.uint8)
+    return cv2.imdecode(data, cv2.IMREAD_COLOR) if data.size else None
+
 def _frame_signature(path: Path, index: int, sample_every: float) -> Optional[FrameSig]:
-    img = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    img = _read_image(path)
     if img is None:
         return None
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -272,7 +277,7 @@ def _contact_sheet(slides: list[dict[str, Any]], out_path: Path, thumb_width: in
         return
     thumbs = []
     for slide in slides:
-        img = cv2.imread(str(slide["image"]), cv2.IMREAD_COLOR)
+        img = _read_image(slide["image"])
         if img is None:
             continue
         h, w = img.shape[:2]
@@ -293,6 +298,8 @@ def _contact_sheet(slides: list[dict[str, Any]], out_path: Path, thumb_width: in
         )
         thumbs.append(canvas)
 
+    if not thumbs:
+        return
     cols = min(4, len(thumbs))
     rows = math.ceil(len(thumbs) / cols)
     cell_h = max(t.shape[0] for t in thumbs)
@@ -302,7 +309,10 @@ def _contact_sheet(slides: list[dict[str, Any]], out_path: Path, thumb_width: in
         y = r * cell_h
         x = c * thumb_width
         sheet[y : y + thumb.shape[0], x : x + thumb.shape[1]] = thumb
-    cv2.imwrite(str(out_path), sheet)
+    encoded, data = cv2.imencode(out_path.suffix, sheet)
+    if not encoded:
+        raise ValueError('Contact sheet encoding failed')
+    out_path.write_bytes(data.tobytes())
 
 
 def extract(frames_dir: Path, output_dir: Path, *, sample_every=5.0, thresholds=None):

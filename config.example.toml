@@ -13,7 +13,7 @@ live_lead_seconds = 600
 # Drop oldest queued audio and record a gap if inference cannot keep up.
 live_queue_chunks = 100
 model = "Qwen/Qwen3-ASR-0.6B"
-device = "mps"
+device = "auto"
 chunk_seconds = 3.0
 # Replay is independent of live detection. Optional local Silero TorchScript model.
 replay_quality = true

@@ -43,7 +43,7 @@ def execution_progress(root: Path, row):
     slides = folder/'result'/'slides.json'
     if slides.exists():
         try:
-            result['slides'] = len(json.loads(slides.read_text()))
+            result['slides'] = len(json.loads(slides.read_text(encoding='utf-8')))
         except ValueError:
             pass
     return result

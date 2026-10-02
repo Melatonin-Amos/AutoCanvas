@@ -34,8 +34,10 @@ class QRDetector:
         return ''
 
     def detect(self, path):
+        import numpy as np
         cv2 = self.cv2
-        image = cv2.imread(str(path))
+        data = np.frombuffer(Path(path).read_bytes(), dtype=np.uint8)
+        image = cv2.imdecode(data, cv2.IMREAD_COLOR) if data.size else None
         if image is None:
             raise ValueError('Unreadable image')
         return self.detect_array(image)

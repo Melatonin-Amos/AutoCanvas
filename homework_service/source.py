@@ -114,6 +114,6 @@ class Source:
         current=self.store.get('assignments',assignment['id'])
         # Do not overwrite notes/source edits that arrived during download.
         current['context_revision']=revision
-        current['context_path']=str(target.relative_to(self.settings.workspace))
+        current['context_path']=target.relative_to(self.settings.workspace).as_posix()
         self.store.put('assignments',current['id'],current)
         return target

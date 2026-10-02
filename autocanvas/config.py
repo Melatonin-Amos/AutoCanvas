@@ -21,7 +21,7 @@ class Settings:
     live_lead_seconds: int = 600
     live_queue_chunks: int = 100
     model: str = 'Qwen/Qwen3-ASR-0.6B'
-    device: str = 'mps'
+    device: str = 'auto'
     chunk_seconds: float = 3
     replay_quality: bool = True
     replay_chunk_seconds: float = 30
@@ -80,7 +80,7 @@ class Settings:
         data = {}
         if path:
             path = Path(path)
-            data = tomllib.loads(path.read_text())
+            data = tomllib.loads(path.read_text(encoding='utf-8'))
             if 'root' in data:
                 data['root'] = (path.resolve().parent / data['root']).resolve()
         if root is not None:
@@ -91,7 +91,7 @@ class Settings:
         settings = cls(**data).validate()
         saved_path = settings.root/'settings.json'
         if saved_path.exists():
-            saved = json.loads(saved_path.read_text())
+            saved = json.loads(saved_path.read_text(encoding='utf-8'))
             settings = cls(**{**settings.public(), **saved}).validate()
         settings._settings_path = saved_path
         return settings

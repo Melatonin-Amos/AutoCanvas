@@ -54,7 +54,7 @@ def register(app, config_path):
         last_scan = time.monotonic()
         titles = {}
         try:
-            for line in (codex_home / 'session_index.jsonl').read_text().splitlines():
+            for line in (codex_home / 'session_index.jsonl').read_text(encoding='utf-8').splitlines():
                 entry = json.loads(line); titles[entry['id']] = entry.get('thread_name', '')
         except (OSError, ValueError, KeyError):pass
         known = {s.get('native_id'): s for s in store.list('sessions') if s['provider'] == 'codex'}
@@ -107,16 +107,16 @@ def register(app, config_path):
             target = Path(value).expanduser()
             if not target.is_absolute() or not target.is_dir():
                 raise ValueError('请选择已存在的绝对目录')
-            values = yaml.safe_load(config_path.read_text()) if config_path.exists() else {}
+            values = yaml.safe_load(config_path.read_text(encoding='utf-8')) if config_path.exists() else {}
             values = values or {}
             values['workspace'] = str(target.resolve())
             values['state_directory'] = str(state_path)
-            config_path.write_text(yaml.safe_dump(values, allow_unicode=True, sort_keys=False))
+            config_path.write_text(yaml.safe_dump(values, allow_unicode=True, sort_keys=False), encoding='utf-8')
             settings.workspace = target.resolve()
             last_scan = 0
         models = []
         try:
-            data = json.loads((codex_home / 'models_cache.json').read_text())
+            data = json.loads((codex_home / 'models_cache.json').read_text(encoding='utf-8'))
             models = [m['slug'] for m in data.get('models', []) if m.get('slug') and m.get('visibility', 'list') == 'list']
         except (OSError, ValueError, TypeError):
             pass

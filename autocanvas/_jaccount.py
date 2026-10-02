@@ -16,7 +16,7 @@ import json
 import logging
 import os
 import re
-import subprocess
+import webbrowser
 import sys
 import time
 from pathlib import Path
@@ -263,7 +263,7 @@ def _prompt_captcha(
         captcha_path = Path(directory) / "captcha.jpg"
         captcha_path.write_bytes(resp.content)
         if not _display_captcha_inline(resp.content):
-            subprocess.Popen(["open", str(captcha_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            webbrowser.open(captcha_path.as_uri())
             print(f"  验证码已保存到: {captcha_path}")
         captcha_text = input("  请输入验证码: ").strip()
         if not captcha_text:
